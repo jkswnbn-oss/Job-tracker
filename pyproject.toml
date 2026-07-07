@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "job-tracker"
+version = "0.1.0"
+description = "CLI tool to track job applications in SQLite"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+]
+
+[project.scripts]
+jobs = "jobs:cli"
+
+[tool.setuptools]
+py-modules = ["jobs"]
