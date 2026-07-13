@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Job application tracker CLI."""
 
+import csv
+import json
 import sqlite3
 import os
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -290,6 +293,103 @@ def delete_cmd(app_id, yes):
 
     console.print(f"[red]Deleted[/red] application [cyan]{app_id}[/cyan] "
                   f"({row['company']} — {row['role']})")
+
+
+EXPORT_COLUMNS = ["id", "company", "role", "stage", "applied_on", "updated_on", "url", "notes"]
+
+
+@cli.command("export")
+@click.option("--output", "-o", type=click.Path(dir_okay=False), default=None,
+              help="File to write. Prints to stdout if omitted.")
+@click.option("--format", "-f", "fmt", default=None,
+              type=click.Choice(["json", "csv"]),
+              help="Output format. Defaults to json, or guessed from the file extension.")
+def export_cmd(output, fmt):
+    """Export all applications as JSON or CSV."""
+    if fmt is None:
+        fmt = "csv" if output and output.lower().endswith(".csv") else "json"
+
+    with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT {', '.join(EXPORT_COLUMNS)} FROM applications ORDER BY id"
+        ).fetchall()
+    records = [dict(r) for r in rows]
+
+    out = open(output, "w", newline="") if output else sys.stdout
+    try:
+        if fmt == "json":
+            json.dump(records, out, indent=2)
+            out.write("\n")
+        else:
+            writer = csv.DictWriter(out, fieldnames=EXPORT_COLUMNS)
+            writer.writeheader()
+            writer.writerows(records)
+    finally:
+        if output:
+            out.close()
+            console.print(f"[green]Exported[/green] {len(records)} application(s) to [bold]{output}[/bold]")
+
+
+@cli.command("import")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--format", "-f", "fmt", default=None,
+              type=click.Choice(["json", "csv"]),
+              help="Input format. Guessed from the file extension by default.")
+def import_cmd(file, fmt):
+    """Import applications from a JSON or CSV export.
+
+    Records are added as new entries (fresh IDs). Rows identical to an
+    existing entry (same company, role, stage, dates, url, notes) are
+    skipped so re-importing a backup doesn't create duplicates.
+    """
+    if fmt is None:
+        fmt = "csv" if file.lower().endswith(".csv") else "json"
+
+    with open(file, newline="") as f:
+        if fmt == "json":
+            records = json.load(f)
+        else:
+            records = list(csv.DictReader(f))
+
+    if not isinstance(records, list):
+        console.print("[red]Expected a list of records.[/red]")
+        raise SystemExit(1)
+
+    today = str(date.today())
+    added = skipped = 0
+    with get_db() as conn:
+        for rec in records:
+            company = (rec.get("company") or "").strip()
+            role = (rec.get("role") or "").strip()
+            if not company or not role:
+                console.print(f"[yellow]Skipping record without company/role: {rec}[/yellow]")
+                skipped += 1
+                continue
+            stage = (rec.get("stage") or "applied").lower()
+            if stage not in STAGES:
+                console.print(f"[yellow]Skipping '{company} — {role}': unknown stage '{stage}'[/yellow]")
+                skipped += 1
+                continue
+            values = (company, role, stage, rec.get("applied_on") or None,
+                      rec.get("updated_on") or today, rec.get("url") or None,
+                      rec.get("notes") or None)
+            dup = conn.execute(
+                """SELECT 1 FROM applications
+                   WHERE company = ? AND role = ? AND stage = ?
+                     AND applied_on IS ? AND updated_on IS ? AND url IS ? AND notes IS ?""",
+                values,
+            ).fetchone()
+            if dup:
+                skipped += 1
+                continue
+            conn.execute(
+                """INSERT INTO applications (company, role, stage, applied_on, updated_on, url, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                values,
+            )
+            added += 1
+
+    console.print(f"[green]Imported {added}[/green] application(s), skipped {skipped}.")
 
 
 if __name__ == "__main__":
